@@ -25,6 +25,9 @@ classdef CO2
     %   e.g. entropy = CO2.s_rhoT(density, temperature)
     % 2) as a function of pressure in MPa and temperature in K
     %   e.g. entropy = CO2.s_pT(pressure, temperature)
+    % 3) as a function of pressure in Pa and temperature in K
+    %   e.g. entropy = CO2.s(pressure, temperature)
+    %   to use with hex() 
     % The inputs must have the same size or one of them has to be a scalar.
     %
     % Equilibrium properties:
@@ -79,7 +82,7 @@ classdef CO2
     % Figure 15 in Span et al. (1994) and also Figure 14 and 16 in Huber et
     % al. (2016)). 
     % Huber et al. propose to use the scaled equation by Albright et al. in
-    % the region 303.1282 < T/K < 305.1282 and 350 < rho/(kg/m³) < 530 if 
+    % the region 303.1282 < T/K < 305.1282 and 350 < rho/(kg/m) < 530 if 
     % highly accurate results are required.
     %
     % For the transport properties two variants are implemented. The 
@@ -139,7 +142,7 @@ classdef CO2
     % I did my best to test and validate this code, but I cannot guarantee
     % that there are no errors in here.
     %
-    % THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, 
+    % THE SOFTWARE IS PROVIDED AS IS, WITHOUT WARRANTY OF ANY KIND, 
     % EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
     % MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND 
     % NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY 
@@ -163,6 +166,8 @@ classdef CO2
     %         original. 
     %   https://creativecommons.org/licenses/by-sa/4.0/
     %
+    %   Contributions by Theresa Brunauer
+    %   Contributions by Viktoria Illyes
 
     properties(Constant)
         M = 44.0098; % g/mol molar mass
@@ -187,8 +192,8 @@ classdef CO2
         
         % In the NIST webbook an other reference state, the IIR convention,
         % is used: 
-        %   h = 200 kJ/kg at 0°C for saturated liquid
-        %   s = 1 J/gK at 0°C for saturated liquid
+        %   h = 200 kJ/kg at 0C for saturated liquid
+        %   s = 1 J/gK at 0C for saturated liquid
         % In most application it makes no difference, because only 
         % differences are of interest.
         % To convert to the IRR convention use
@@ -199,8 +204,6 @@ classdef CO2
         delta_s = 2.7390; % kJ/kg K offset to IRR reference state
     end
 
-    % Methods for process_medium hex
-    % @Theresa Brunauer
 
     properties(Constant)
         cf = 1.0001;    %properties of the fluid                                                    
@@ -212,59 +215,20 @@ classdef CO2
     end
 
     methods(Static)
-
-        function p=p(rho,T) 
-            p = CO2.p_rhoT(rho, T).*10^6; 
-        end
-
-        function my=my(rho,T) 
-            [MY, ~] = CO2.transport_rhoT(rho, T);
-            my = MY.*10^-3;
-        end
-
-        function lambda = lambda(rho,T)
-            lambda = CO2.lambda_in(rho,T).*10^-3;
-        end
-
         function h = h_rhoT(rho,T)
             h = CO2.h_rho_T(rho, T).*10^3;
         end
 
-        function H = h_Druck(p,T)
-            p = p .* 10^-6;
-            H = CO2.h_pT(p, T).*10^3;
-        end
-
-        function Pr=Pr(rho,T)   
+        function Pr=Pr(rho,T)   %Prandtl-number
+            %rho in kg/mÂ³, T in K
             c_p = CO2.cp_rhoT(rho, T).*10^3;
             my = CO2.transport_rhoT(rho, T).*10^-3;
             lambda = CO2.lambda_in(rho,T).*10^-3;
             Pr=c_p.*my./lambda;
         end
- 
-        function T=T_ph(p,h)
-            p = p.*10^-6;
-            h = h .* 10^-3;
-        
-            T = NaN(1,size(h,2));
-            for i=1:size(h,2)
-                T(i) = fzero(@(T) CO2.h_pT(p(i),T)-h(i),[218, 1000]); %Endpunkte!
-            end
-        end
 
-        function v=v(p,T,~)
-            p = p.*10^-6;
-            v = 1./(CO2.rho_pT(p,T));
-            % rho 2phase     
-        end
-
-        function w=w(p,T,x)
-            if nargin<3 || isempty(x)
-                x=NaN;
-            end
-            p = p.*10^-6;
-            rho = CO2.rho_pT(p,T);
-            w = CO2.w_rhoT(rho,T);
+        function lambda = CO2.lambda(rho,T)
+            lambda = CO2.lambda_in(rho,T).*10^-3;
         end
 
         function is2phase=is2phase(rho,T)
@@ -289,10 +253,155 @@ classdef CO2
             x=(rho.^-1-rho0.^-1)./(rho1.^-1-rho0.^-1);
         end
 
-
     end
 
-   
+   methods(Static) % Properties in (p, T) with (Pa, K) for hex()-class
+   % Thermodynamic properties as functions of pressure in Pa and 
+   % temperature in K.    
+
+        function h = h(p,T)
+            % Enthalpy in J/kg as function of pressure in Pa and temperature in K
+            p = p .* 10^-6;
+            h = CO2.h_pT(p, T).*10^3;
+        end
+
+        function rho = rho(p, T)
+            % Density in kg/m3 as function of pressure in Pa and temperature in K
+            % This function is used in all p-T functions to compute the
+            % density. Then the requested property is computed with the
+            % rho,T functions.
+            p=p.*1e-6;
+            [p, T, sz] = CO2.checkInput(p, T);
+            if isscalar(T)
+                T = repmat(T, size(p));
+            end
+            
+            isLiquid = p > CO2.pVap(T(:)); % no need to check T < CO2.Tc 
+            d_ig = p.*1e3/CO2.R./T/CO2.rhoc; % reduced density of ideal gas
+            
+            % initial values for iteration
+            d0 = nan(size(T));
+            % estimate density in liquid with saturated liquid density at T
+            d0(isLiquid) = CO2.rhoLiqSat(T(isLiquid)) /CO2.rhoc;
+            % estimate density in gas/sc-fluid with density of ideal gas
+            d0(~isLiquid) = d_ig(~isLiquid);
+            
+            % Compute reduced density with inverse function
+            t = CO2.Tc ./ T(:);
+            d = CO2.d_newton(t, d_ig, d0);
+
+            rho = reshape(d.*CO2.rhoc, sz);
+        end  
+
+        function v = v(p, T)
+            % Specific volume in m3/kg as function of pressure in Pa and temperature in K
+            p=p.*1e6;
+            [p, T, sz] = CO2.checkInput(p, T);
+            if isscalar(T)
+                T = repmat(T, size(p));
+            end
+            
+            isLiquid = p > CO2.pVap(T(:)); % no need to check T < CO2.Tc 
+            d_ig = p.*1e3/CO2.R./T/CO2.rhoc; % reduced density of ideal gas
+            
+            % initial values for iteration
+            d0 = nan(size(T));
+            % estimate density in liquid with saturated liquid density at T
+            d0(isLiquid) = CO2.rhoLiqSat(T(isLiquid)) /CO2.rhoc;
+            % estimate density in gas/sc-fluid with density of ideal gas
+            d0(~isLiquid) = d_ig(~isLiquid);
+            
+            % Compute reduced density with inverse function
+            t = CO2.Tc ./ T(:);
+            d = CO2.d_newton(t, d_ig, d0);
+
+            rho = reshape(d.*CO2.rhoc, sz);
+            v=1./rho;
+        end
+
+        function T=T_ph(p,h)
+            % Temperature in K as function of pressure in Pa and enthalpy in J/kg
+            p = p.*10^-6;
+            h = h .* 10^-3;
+        
+            T = NaN(1,size(h,2));
+            for i=1:size(h,2)
+                T(i) = fzero(@(T) CO2.h_pT(p(i),T)-h(i),[218, 1500]);
+            end
+        end
+
+        function w=w(p,T,x)
+            if nargin<3 || isempty(x)
+                x=NaN;
+            end
+            p = p.*10^-6;
+            rho = CO2.rho_pT(p,T);
+            w = CO2.w_rhoT(rho,T);
+        end
+
+        function p=p(rho,T) 
+        % Pressure in Pa as function of temperature in K and density in
+        % kg/m^3
+            p = CO2.p_rhoT(rho, T).*10^6; 
+        end
+
+        function my=my(rho,T) 
+            % Viscosity eta in Pa s
+            [MY, ~] = CO2.transport_rhoT(rho, T);
+            my = MY.*10^-3;
+        end
+        
+        function lambda = lambda(rho,T)
+            % Thermal conductivity lambda in W/m K
+            lambda = CO2.lambda_in(rho,T).*10^-3;
+        end
+
+        function cp = cp(p, T)
+            % Isobaric heat capacity in J/(kg K) as function of pressure in Pa and temperature in K
+            p=p./1e6;
+            cp=CO2.cp_pT(p, T).*1000;
+        end
+
+        function Tpc=Tpc(p)
+            % pseudocritical temperature in K as a function of pressure in Pa
+            Tpc = 3.700621431891665e+02.*exp(-2.684598659785788e-10.*p) -1.345178030313569e+02.*exp(-9.751799518360223e-08.*p);
+
+            % n=1000;
+            % 
+            % p1=repmat((linspace(75,300,n)/10)',1,n); %MPa
+            % T1=repmat(linspace(31,120,n)+273.15,n,1);
+            % cp1=CO2.cp_pT(p1,T1);
+            % 
+            % [~,idx]=max(cp1,[],2);
+            % 
+            % figure(2)
+            % p=p1(:,1)*10^6;
+            % T=T1(1,idx);
+            % plot(p,T)
+            % Fit Name: untitled fit 1
+            % 
+            % Exponential Curve Fit (exp2)
+            % f(x) = a*exp(b*x) + c*exp(d*x)
+            % 
+            % Coefficients and 95% Confidence Bounds
+            %        Value        Lower        Upper   
+            % a    370.0621     369.4163     370.7080 
+            % b    -0.0000      -0.0000      -0.0000  
+            % c    -134.5178    -134.9099    -134.1257
+            % d    -0.0000      -0.0000      -0.0000  
+            % 
+            % Goodness of Fit
+            %              Value   
+            % SSE         7.1792  
+            % R-square    1.0000  
+            % DFE         996.0000
+            % Adj R-sq    1.0000  
+            % RMSE        0.0849  
+            %
+            %coeffvalues(fittedmodel)
+        end
+
+   end
 
     methods(Static) % Phase boundaries and properties in T
         function pM = pMelt(T)
@@ -399,7 +508,7 @@ classdef CO2
             plot([CO2.Tc CO2.Tc]-273.15, [CO2.pc CO2.pMelt(CO2.Tc)].*10, 'k--',  'DisplayName', 'liquid-super critical');
             plot([CO2.Tc T(end)]-273.15, [CO2.pc CO2.pc].*10, 'k--', 'DisplayName', 'gas-super critical');
             ylabel('p in bar');
-            xlabel('T in °C');
+            xlabel('T in C');
             set(gca, 'yscale', 'log');
         end
         
@@ -419,7 +528,7 @@ classdef CO2
     end
     
     methods(Static) % Properties in (rho, T) 
-        % Equilibrium properties as functions of density in kg/m³ and
+        % Equilibrium properties as functions of density in kg/m and
         % temperature in K according to Table 3 in Span et al. (1994).
         % A validity check is performed. For points in the two-phase region
         % nan is returned. If the validity check is not required the
@@ -1098,7 +1207,7 @@ classdef CO2
 
     methods(Static) % Transport properties 
         function [eta, lambda] = transport_rhoT(rho, T)
-            % Transport properties as functions of density in kg/m³ and
+            % Transport properties as functions of density in kg/m and
             % temperature in K. The model can be selected in
             % CO2.transport_rhoT_i(rho, T).
             % A validity check is performed. For points in the two-phase region
@@ -1128,7 +1237,7 @@ classdef CO2
         end
         
         function [eta, lambda] = transport_rhoT_i(rho, T)
-            % Transport properties as functions of density in kg/m³ and
+            % Transport properties as functions of density in kg/m and
             % temperature in K. Two models are available:
             % 1) The modern one based on Laesecke et al. (2017),
             %   Luettmer-Strathmann et al. (1995) and Huber et al. (2016),
@@ -1179,7 +1288,7 @@ classdef CO2
             % according to Vesovic et. al (1990)
             % eta in muPa s
             % lambda in mW/(m K)
-            % rho in kg/m³
+            % rho in kg/m
             % T in K
             
             % constants according to Table 5
@@ -1308,9 +1417,9 @@ classdef CO2
         end % function eta_crossover_Vesovic
         
         function eta = eta_rhoT_Vesovic(rho, T)
-            % Viscosity of CO2 in muPa s as a function of density in kg/m³
+            % Viscosity of CO2 in muPa s as a function of density in kg/m
             % and temperature in K.
-            % Valid from 200 K to 1500 K and densities up to 1400 kg/m³. In
+            % Valid from 200 K to 1500 K and densities up to 1400 kg/m. In
             % terms of pressure it is valid up to 300 MPa for temperatures
             % below 1000 K. Above 1000 K the limit is 30 MPa.
             % based on Vesovic et al. (1990) "The transport properties of
@@ -1344,7 +1453,7 @@ classdef CO2
         
         function lambda = lambda_rhoT_Vesovic(rho, T)
             % Thermal conductivity of CO2 in mW/m K as a function of
-            % density in kg/m³ and temperature in K.
+            % density in kg/m and temperature in K.
             % Valid from 200 K to 1000 K and pressures up to 100 MPa
             % based on Vesovic et al. (1990) "The transport properties of
             % carbon dioxide" in J. Phys. Chem. Ref. Data, Vol. 19, No. 3.
@@ -1371,7 +1480,7 @@ classdef CO2
         end % function lambda_rhoT_Vesovic
         
         function eta = eta_rhoT_Laesecke(rho, T)
-            % Viscosity of CO2 in mPa s as a function of density in kg/m³
+            % Viscosity of CO2 in mPa s as a function of density in kg/m
             % and temperature in K.
             % Valid from 100 to 2000 K for gaseous CO2 and from 220 to 700
             % K with pressures along the melting line up to 8000 MPa for
@@ -1425,7 +1534,7 @@ classdef CO2
             % according to Luettmer-Strathmann et al. (1995)
             % eta in mPa s
             % lambda in mW/m K
-            % rho in kg/m³
+            % rho in kg/m
             % T in K
             
             % constants
@@ -1680,7 +1789,7 @@ classdef CO2
             % slightly.
             % eta in mPa s
             % lambda in mW/m K
-            % rho in kg/m³
+            % rho in kg/m
             % T in K
             
             % constants
